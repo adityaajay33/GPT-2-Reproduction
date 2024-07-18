@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import math
 
 '''
 Attention - A weighted sum is calculated after assigning weights to different parts of the input 
@@ -180,6 +181,45 @@ class GPT(nn.Module):
 model = GPT.from_pretrained('gpt2')
 print("loaded gpt")
 
+num_return_sequences = 5
+max_length = 30
+
 model = GPT.from_pretrained('gpt2')
 model.eval() #there might be no effect since there are no training specific layers like dropout or batch norm
 model.to('cuda') #moving to gpu
+
+#prefix tokens
+import tiktoken
+enc = tiktoken.get_encoding("gpt2")
+tokens = enc.encode("Hello, I'm a language model") #Encodes and writtens a list of integers, tokens are string chunks
+tokens = torch.sensor(tokens, dtype=torch.long)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) #repeats the same number of times as the number of lines you asked for output
+x = tokens.to("cuda") #x is the index you put in the idx, to get the logits
+
+#X is of shape (B, T), where B = batch_size, T = time
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+while x.size(1) < max_length:#each loop iteration adds one more column to x, more data comes along through sampling
+    with torch.no_grad(): #saves a lot of space and time, because youre not caching a lot of data. data is normally cached if youre going to calculate gradients, which we are not
+        logits = model(x) 
+
+        #get logits at last location/column only 
+        logits = logits[:, -1, :]
+        #get probability using softmax from logits
+        probs = F.softmax(logits, dim=-1)
+        #did a topk sampling of 50; huggingface pipeline (keep only top 50 probabilities, and everything below we claim as 0 and renormalize)
+        #it helps keep the model stick to the vicinity of likely results 
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+        #select a token from the top 50 probabilities
+        ix = torch.multinomial(topk_probs, 1)
+
+        xcol = torch.gather(topk_indices, -1, ix)
+        #append it to the sequence as a column
+        x = torch.cat((x, xcol), dim=1)
+        #x is of size 5 x 30
+
+
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(">", decoded)
