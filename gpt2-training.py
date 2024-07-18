@@ -1,8 +1,7 @@
 from dataclasses import dataclass
-import torch
+import torch, math, tiktoken
 import torch.nn as nn
 from torch.nn import functional as F
-import math
 
 '''
 Attention - A weighted sum is calculated after assigning weights to different parts of the input 
@@ -103,7 +102,7 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx): #The token indices are being fed to the model
+    def forward(self, idx, targets=None): #The token indices are being fed to the model
 
         #index is of shape: (Batch_size, Token_size)
         B, T = idx.size()
@@ -123,10 +122,13 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
 
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         '''If the input is B x T indices, then at every single B x T you will calculate the token
         for what comes next in the sequence, what is  (B, T+1). Vocab is the number of possible tokens.
         After softmax the logits become probabilities.'''
-        return logits
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -182,11 +184,44 @@ model = GPT.from_pretrained('gpt2')
 num_return_sequences = 5
 max_length = 30
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device="cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
+print(f"using device: {device}")
 
-model = GPT.from_pretrained('gpt2')
-model.eval() #there might be no effect since there are no training specific layers like dropout or batch norm
+enc = tiktoken.get_encoding('gpt2')
+with open('input.txt', 'r') as f:
+    text = f.read()
+data = text[:1000]
+tokens = enc.encode(data)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T + 1]).to(device) #the + 1 is necessary becaue you need the ground truth for the very last token
+x = buf[:-1].view(B, T).to(device) #andrej likes to have a labels tensor which is the same size but has targets for every single position
+y = buf[1:].view(B, T).to(device)
+
+#model = GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig)
 model.to(device) #moving to gpu
+#logits, loss = model(x, y)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50): #Number of training steps
+    #The optimizer must start at zero gradient because the backward() will always add to the gradient
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    #Step function will update the parameters and decrease the loss
+    optimizer.step()
+    #the item function will take the one dimensional tensor from gpu/mps, transfer it to the cpu and convert to float
+    print(f"Step {i}, loss: {loss.item()}")
+
+
+'''
+
+model.eval() #there might be no effect since there are no training specific layers like dropout or batch norm
+
 
 #prefix tokens
 import tiktoken
@@ -225,3 +260,5 @@ for i in range(num_return_sequences):
     tokens = x[i, :max_length].tolist()
     decoded = enc.decode(tokens)
     print(">", decoded)
+
+'''
