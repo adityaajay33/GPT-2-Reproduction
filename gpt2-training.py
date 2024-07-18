@@ -76,7 +76,7 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(Self, x):
+    def forward(self, x):
         x =  x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
@@ -103,13 +103,12 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    @classmethod
     def forward(self, idx): #The token indices are being fed to the model
 
         #index is of shape: (Batch_size, Token_size)
         B, T = idx.size()
         #T has to be les than max sequence length
-        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size "
+        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         #arange is like range but for pytorch, and youre iterating from 0 to T to make a position index
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device) #last param makes sure you're training on gpu and cpu
         pos_emb = self.transformer.wpe(pos) #position embeddings of shape (T, n_embd). Identical for each row
@@ -179,26 +178,29 @@ class GPT(nn.Module):
         return model
 
 model = GPT.from_pretrained('gpt2')
-print("loaded gpt")
 
 num_return_sequences = 5
 max_length = 30
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 model = GPT.from_pretrained('gpt2')
 model.eval() #there might be no effect since there are no training specific layers like dropout or batch norm
-model.to('cuda') #moving to gpu
+model.to(device) #moving to gpu
 
 #prefix tokens
 import tiktoken
 enc = tiktoken.get_encoding("gpt2")
-tokens = enc.encode("Hello, I'm a language model") #Encodes and writtens a list of integers, tokens are string chunks
-tokens = torch.sensor(tokens, dtype=torch.long)
+tokens = enc.encode("Hello, I'm a language model,") #Encodes and writtens a list of integers, tokens are string chunks
+tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) #repeats the same number of times as the number of lines you asked for output
-x = tokens.to("cuda") #x is the index you put in the idx, to get the logits
+x = tokens.to(device) #x is the index you put in the idx, to get the logits
 
 #X is of shape (B, T), where B = batch_size, T = time
 torch.manual_seed(42)
-torch.cuda.manual_seed(42)
+if device=="cuda":
+    torch.cuda.manual_seed(42)
+
 while x.size(1) < max_length:#each loop iteration adds one more column to x, more data comes along through sampling
     with torch.no_grad(): #saves a lot of space and time, because youre not caching a lot of data. data is normally cached if youre going to calculate gradients, which we are not
         logits = model(x) 
