@@ -178,6 +178,44 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
 
         return model
+    
+'''
+The following is a dataloader.
+'''
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B #B is the batch size
+        self.T = T #T is the number of timesteps
+        self.current_position = 0 #Set the starting position to 0
+
+        #Here you're reading the data
+        with open('input.txt', 'r') as f:
+            text = f.read()
+
+        enc = tiktoken.get_encoding('gpt2') #Borrowing the encoder from tiktoken
+        tokens = enc.encode(text) #Encoding the text file
+        self.tokens = torch.tensor(tokens) #Converting them all to tensor format
+        print(f"loaded {len(self.tokens)} tokens") #Printing how many tokens there are
+        print(f"1 epoch = {len(self.tokens) // (B*T)} batches") #Printing how many batches there are in the dataset
+
+    def next_batch(self):
+        B, T = self.B, self.T #initialize the B and T values
+        buf = self.tokens[self.current_position : self.current_position+B*T+1] #You want to take all the values from the start position to the end position +1
+        #You add 1 to the ending index because you need the last target too
+        x = (buf[:-1]).view(B, T)
+        y = (buf[1:]).view(B, T)
+
+        #Reupdating the starting position and if the new starting position overflows, then reset to 0
+        self.current_position += B*T
+        if self.current_position + (B * T +1) > len(self.tokens):
+            self.current_position = 0
+
+        return x, y
+
+'''
+The following code selects the device on which the model is to be trained: cpu, gpu, or mps.
+Then, it takes a sample dataset (tinyshakespeare) and tokenizes it before performing training on it.
+'''
 
 model = GPT.from_pretrained('gpt2')
 
@@ -191,15 +229,8 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
 print(f"using device: {device}")
 
-enc = tiktoken.get_encoding('gpt2')
-with open('input.txt', 'r') as f:
-    text = f.read()
-data = text[:1000]
-tokens = enc.encode(data)
-B, T = 4, 32
-buf = torch.tensor(tokens[:B*T + 1]).to(device) #the + 1 is necessary becaue you need the ground truth for the very last token
-x = buf[:-1].view(B, T).to(device) #andrej likes to have a labels tensor which is the same size but has targets for every single position
-y = buf[1:].view(B, T).to(device)
+train_loader = DataLoaderLite(B=4, T=32)
+
 
 #model = GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig)
@@ -209,6 +240,8 @@ model.to(device) #moving to gpu
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50): #Number of training steps
     #The optimizer must start at zero gradient because the backward() will always add to the gradient
+    x, y  = train_loader.next_batch() #loading the next batch
+    x, y = x.to(device), y.to(device) #moving tensors to selected device
     optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()
