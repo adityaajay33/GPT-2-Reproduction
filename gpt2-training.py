@@ -23,6 +23,8 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        #scale down the weights during activation using 1/sqrt(N) where N is the number of layers according to gpt2 paper
+        self.c_proj.NANOGPT_SCALE_INIT = 1 #flag
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -54,10 +56,10 @@ class MLP(nn.Module):
     def __init__(self, config):
         super().__init__() #Allows it to inherit from the nn.Module super class (Polymorphism)
         self.c_fc = nn.Linear(config.n_embd, 4*config.n_embd)
-
         #Using the tanh approximation since that's what was used in the original GPT-2
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4*config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1 #flag
 
     def forward(self, x):
         #Two linear projections sandwich a GELU function
@@ -101,6 +103,23 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        #what you are doing here is th at you are converting the hidden state values back to token space
+        #this is done so the original input and the resulting output tokens are closely tied and this will improve learning
+        self.transformer.wte.weight = self.lm_head.weight
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std*= (2 * self.config.n_layer)**-0.5  #reason its x2 is ebcause every layer of our transformer has two blocks that add to the residual pathway (attention and mlp )
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None): #The token indices are being fed to the model
 
@@ -231,6 +250,8 @@ print(f"using device: {device}")
 
 train_loader = DataLoaderLite(B=4, T=32)
 
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 #model = GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig)
