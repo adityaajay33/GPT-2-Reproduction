@@ -208,7 +208,7 @@ class DataLoaderLite:
         self.current_position = 0 #Set the starting position to 0
 
         #Here you're reading the data
-        with open('input.txt', 'r') as f:
+        with open('../input.txt', 'r') as f:
             text = f.read()
 
         enc = tiktoken.get_encoding('gpt2') #Borrowing the encoder from tiktoken
@@ -235,7 +235,7 @@ class DataLoaderLite:
 The following code selects the device on which the model is to be trained: cpu, gpu, or mps.
 Then, it takes a sample dataset (tinyshakespeare) and tokenizes it before performing training on it.
 '''
-
+import time 
 model = GPT.from_pretrained('gpt2')
 
 num_return_sequences = 5
@@ -248,7 +248,7 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
 print(f"using device: {device}")
 
-train_loader = DataLoaderLite(B=4, T=32)
+train_loader = DataLoaderLite(B=4, T=256)
 
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
@@ -258,18 +258,50 @@ model = GPT(GPTConfig)
 model.to(device) #moving to gpu
 #logits, loss = model(x, y)
 
+torch.set_float32_matmul_precision("high")
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50): #Number of training steps
     #The optimizer must start at zero gradient because the backward() will always add to the gradient
+    t0 = time.time()
     x, y  = train_loader.next_batch() #loading the next batch
     x, y = x.to(device), y.to(device) #moving tensors to selected device
     optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()
+    #in pytorch, all tensors are by default regarded as float32, which is too precise for gpt2. ints have uniform spacing but we need floating points to represent the normal distribution found when training neural networks
+    #int8 not used for training but used for inference 
     #Step function will update the parameters and decrease the loss
     optimizer.step()
     #the item function will take the one dimensional tensor from gpu/mps, transfer it to the cpu and convert to float
-    print(f"Step {i}, loss: {loss.item()}")
+    #waits for all the queued operations for the gpu and then takes the time
+    torch.cuda.synchronize() if (device=="cuda") else torch.mps.synchronize()
+    t1 = time.time()
+    dt = (t1-t0)*1000
+    tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0) #throughput calculation
+    print(f"Step {i}, loss: {loss.item()}, dt: {dt:.2f} ms, tokens/sec: {tokens_per_sec}")
+
+
+#what are tensor cores
+#tensor cores are just instructions in the A100 architecture. it does a 4x4 matrix multiplication. there are multiple configurations regarding how 
+#   accurate they are
+    
+#most of the work we do is matrix multiplication. The classifier layer is the biggest matrix multiplication which goes from 768 to 50257.
+
+'''
+What are the differences between FP32 and TF32?
+
+FP32 is a more precise representation of numeric data which contains 23 bits for the mantissa compared to TF32 which only has 10 bits
+    for the mantissa. It does not sacrifice accuracy and improves throughput.
+
+The mantissa is part of the floating point number which contains the significant digits. 
+
+'''
+
+
+
+
+
 
 
 '''
